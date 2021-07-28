@@ -6,7 +6,7 @@ import socket
 
 class GTO:
 
-    def __init__(self, port=55144, addr='localhost'):
+    def __init__(self, port=55143, addr='localhost'):
         self.port = port
         self.addr = addr
         self.sock = None
@@ -47,7 +47,7 @@ class GTO:
         chunks = []
         received = 0
         while True:
-            chunk = self.sock.recv(2048)
+            chunk = self.sock.recv(0)
             received += len(chunk)
             if len(chunk) == 0:
                 return b''.join(chunks)
@@ -57,6 +57,7 @@ class GTO:
     def send(self, message: str):
         message = self.create_message(message).encode('utf-8')
         total_sent = 0
+        print("Sending payload: \"{}\"".format(message))
         while total_sent < len(message):
             sent = self.sock.send(message[total_sent:])
             if sent == 0:
