@@ -78,20 +78,3 @@ class GTO:
             if sent == 0:
                 raise RuntimeError("socket connection broken")
             total_sent += sent
-
-
-def test():
-    g = GTO()
-    g.connect()
-    g.load_file(r"C:\Users\bkush\Documents\GTO+\Kd3s2c-7-6-2021.gto")
-    print(g.receive())
-    g.request_node_data()
-    print(g.receive())
-    g.request_action_data()
-    print(g.receive())
-
-    g.request_current_line()
-    print(g.receive())
-
-if __name__ == '__main__':
-    test()
