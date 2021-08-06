@@ -27,23 +27,63 @@ class GTO:
 
     def load_file(self, path: str):
         self.send("Load file: {}".format(path))
-        # recv = self.receive()
-        # return recv
+        time.sleep(0.5)
+        recv = self.receive().decode()
+        return recv
 
     def request_node_data(self):
-        return self.send('Request node data')
+        self.send('Request node data')
+        time.sleep(0.5)
+        recv = self.receive().decode().strip('~').strip('[]')
+        items = recv.split('][')
+        _, board, oop, ip = items
+
+        return {'board': board, 'oop': oop, 'ip': ip}
 
     def request_pot_stacks(self):
-        return self.send('Request pot/stacks')
+        self.send('Request pot/stacks')
+        time.sleep(0.1)
+        recv = self.receive().decode().strip('~')
+        print(recv)
+
+        # Skip Header
+        idx = recv.index(']')
+        recv = recv[idx+1:]
+
+        # Pot
+        idx = recv.index(']')
+        pot  = float(recv[6:idx])
+        recv = recv[idx+1:]
+
+        # OOP Stack
+        idx = recv.index(']')
+        oop_stack  = float(recv[12:idx])
+        recv = recv[idx+1:]
+        
+        # OOP Stack
+        idx = recv.index(']')
+        ip_stack  = float(recv[11:idx])
+
+        return {'pot': pot, 'oop_stack': oop_stack, 'ip_stack': ip_stack}
 
     def request_current_line(self):
-        return self.send('Request current line')
+        self.send('Request current line')
+        time.sleep(0.05)
+        recv = self.receive().decode().strip('~')
+        if recv == 'Hand is at  start of tree.':
+            return []
+        return recv.split(',')
 
     def take_action(self, action_n):
         return self.send('Take action: {}'.format(action_n))
 
     def request_action_data(self):
-        return self.send('Request action data')
+        self.send('Request action data')
+        time.sleep(0.1)
+        recv = self.receive().decode().strip('~')
+        recv = recv.strip(']').split(': ')[1].split(',')
+        print(recv)
+        return  recv
 
     def ask_if_processing(self):
         return self.send('Still processing instruction?')
