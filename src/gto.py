@@ -1,210 +1,350 @@
 #!/usr/bin/env python3
 
-"""This file communicates with a GTO instance"""
-
 import socket
 import time
 from pathlib import Path
 
-class GTO:
 
-    def __init__(self, port=55143, addr='localhost'):
-        self.port = port
-        self.addr = addr
-        self.sock = None
+class GTO:
+    def __init__(self, port=55143, addr="localhost", verbose=False):
+        self._port = port
+        self._addr = addr
+        self._sock = None
+        self._verbose = verbose
+
+        # Messages to GTO+ are blocked into 4096 byte chunks
+        self._block_len = 4096
+
+        # GTO+ has fragile interrupt handling. We sleep at these points in attempt
+        # to keep GTO+ running. Note this value may be dependent on your machine
+        # (i.e., this value is sensitive to your box's performance with respect to
+        # its hardware and current load).
+        self._sleep_time_sec = 0.5
+
+        # TODO: Maybe add big sleep, little sleep. Sometimes we can just nap.
+
+    """
+    Opens a connection to GTO+ using the settings provided in the constructor.
+    If GTO+ does not confirm a successful connection, this method raises an
+    exception.
+    """
 
     def connect(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((self.addr, self.port))
-        self.send("init")
-        self.sock.recv(4096)
-        resp = self.sock.recv(4096).decode().strip('~')
-        return resp
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.connect((self._addr, self._port))
+
+        self._send("init")
+        self._sock.recv(self._block_len)
+
+        response = self._sock.recv(self._block_len).decode().strip("~")
+
+        if self._verbose:
+            print(f"Connection result: {response}")
+
+        if response != "You are connected to GTO+":
+            raise RuntimeError("Unable to connect to GTO+")
+
+        return response
+
+    """
+    Closes a connection to GTO+.
+    """
 
     def disconnect(self):
-        if not self.sock:
-            print("Warning: trying to close unopened connection")
-        self.sock.close()
-        self.sock = None
+        if not self._sock:
+            return
+
+        self._sock.close()
+        self._sock = None
+
+    """
+    Loads a saved solve file
+    """
 
     def load_file(self, path: str):
-        self.send("Load file: {}".format(path))
-        time.sleep(0.5)
-        recv = self.receive().decode().strip('~')
-        return recv
+        self._send("Load file: {}".format(path))
+        time.sleep(self._sleep_time_sec)
+        response = self._receive().decode().strip("~")
 
-    def __parse_player_data(self, player_data_str, actions):
-        pos = None
-        pd = player_data_str.strip().split('\r\n')
-        meta = pd[0].strip().split(', ')
-        if len(meta) == 3:
-            pos = True
+        return response
 
-        pd = [line.split() for line in pd[2:]]
-        pd_d = {}
-        for row in pd:
-            hand = row[0]
-            row_d = {}
-            rowf = [float(x) for x in row[1:]]
-            row_d['COMBOS'] = rowf[0]
-            row_d['EQUITY'] = rowf[1]
-            if pos == True:
-                for i, a in enumerate(actions):
-                    row_d[a] = {'FREQ': rowf[2+i], 'EV': rowf[2+i+len(actions)]}
-            pd_d[hand] = row_d
-        return pd_d, pos
+    """
+    Requests node data containing information about the board, player to act, each
+    player's actions, and each player's holdings.
+    """
 
     def request_node_data(self):
-        '''
-        Return a dict representing node date. The dict has keys:
-        + `board`: map to a list of board cards, in order
-        + `actions`: list of actions performed by the current player
-        + `pos`: current player ('ip', or 'oop')
-        + `oop`: a dict mapping OOP's hands to that hand's stats (see below)
-        + `ip`: a dict mapping IP's hands to that hand's stats (see below)
-        >>> s = GTO()
-        >>> s.connect()
-        'You are connected to GTO+'
-        >>> s._load_akq_game()
-        >>> nd = s.request_node_data()
-        >>> nd['pos']
-        'oop'
-        >>> nd['actions']
-        ['Bet 1', 'Check']
-        >>> nd['oop']['KcKh']['COMBOS']
-        1.0
-        >>> nd['oop']['KcKh']['EQUITY']
-        50.0
-        >>> nd['oop']['KcKh']['Bet 1']['FREQ']
-        0.0
-        >>> nd['oop']['KcKh']['Check']['FREQ']
-        100.0
-        >>> nd['oop']['KcKh']['Check']['EV']
-        0.25
-        >>> nd['ip']['QcQh']['COMBOS']
-        1.0
-        >>> nd['ip']['QcQh']['EQUITY']
-        0.0
-        '''
-        self.send('Request node data')
-        time.sleep(0.1)
-        recv = self.receive().decode().strip('~').strip('[]')
-        items = recv.split('][')
-        _, board, oop, ip = items
+        board, oop, ip = self._get_node_data()
+        actions = self._get_action_data()
 
-        # Get actions at current node.
-        actions = self.request_action_data()
+        oop, is_oop_to_act = self._parse_player_data(oop, actions)
+        ip, is_ip_to_act = self._parse_player_data(ip, actions)
 
-        pos = None                            # The position/player to act next
+        if is_ip_to_act == is_oop_to_act:
+            raise RuntimeError("IP and OOP can't both be next to act")
 
-        # Parse board of form "Board: AsTd3h4d"
+        next_to_act = "ip" if is_ip_to_act else "oop"
+
+        return {
+            "board": board,
+            "next_to_act": next_to_act,
+            "oop": oop,
+            "ip": ip,
+            "actions": actions,
+        }
+
+    """
+    Private method that parses the response to a request for node data. Returns a tuple
+    containing raw text of the board, IP, and OOP data.
+    """
+
+    def _get_node_data(self):
+        self._send("Request node data")
+
+        time.sleep(self._sleep_time_sec)
+
+        response = self._receive().decode()
+
+        # The response format is roughly as follows (note that XX, YY, and ZZ are
+        # dealt with later):
+        #
+        # "~[GTO+ export][Board: XX][OOP, YY][IP, ZZ]~"
+        #
+        # Strip the response of '~' and starting and ending brackets. This makes
+        # splitting easier later. We're left with a format as follows:
+        #
+        # "GTO+ export][Board: XX][OOP, YY][IP, ZZ"
+        result = response.strip("~").strip("[]")
+
+        # Split the raw board, OOP, and IP data. Each will require further parsing.
+        # Drop "GTO+ export". We should have:
+        #
+        # board="Board: XX"
+        # oop="OOP, YY"
+        # ip="IP, ZZ"
+        result = result.split("][")
+        _, board, oop, ip = result
+
+        # Drop "Board:" so we're left with something of the form "AsTd3h"
         board = board.split()[1].strip()
-        board = [ board[i:i+2] for i in range(0, len(board), 2)]
 
-        # Parse oop
-        oop, oop_to_act = self.__parse_player_data(oop, actions)
-        if oop_to_act:
-            pos = 'oop'
+        return (board, oop, ip)
 
-        # Parse ip
-        ip, ip_to_act = self.__parse_player_data(ip, actions)
-        if ip_to_act:
-            assert pos is None
-            pos = 'ip'
-        assert pos is not None
-        return {'board': board, 'oop': oop, 'ip': ip, 'pos': pos, 'actions': actions}
+    """
+    Private method that parses the response to a request for action data
+    """
+
+    def _get_action_data(self):
+        self._send("Request action data")
+
+        time.sleep(self._sleep_time_sec)
+
+        # The response has the following format:
+        #
+        # ~[n actions: X1,X2, ... Xn]~
+        response = self._receive().decode().strip("~")
+
+        # Drop the brackets and "n actions:" and collect each action's name in a list.
+        # For example: ['Bet 1', 'Check']
+        result = response.strip("]").split(": ")[1].split(",")
+
+        return result
+
+    """
+    Private method that parses player data at a node. Returns a dictionary of the
+    following form:
+
+    {
+        'KcKh': {
+            'COMBOS': 1.0,
+            'EQUITY': 50.0,
+            'Bet 1': {'FREQ': 0.0, 'EV': 0.0},
+            'Check': {'FREQ' 100.0, 'EV': 0.25}
+        }
+    }
+
+    Note that if the player is not next to act then there will not be any actions
+    (i.e., 'Bet 1' and 'Check').
+
+    GTO+ seems to return these data per combo.
+    """
+
+    def _parse_player_data(self, raw_player_data, actions):
+        raw_player_data = raw_player_data.strip().split("\r\n")
+
+        # Metadata are IP/OOP, number of combos, and number of available actions.
+        # The available actions are only present when the player is next to act
+        # (in this node). If the player is not next to act, there are only two
+        # elements in the list.
+        metadata = raw_player_data[0].strip().split(", ")
+        is_next_to_act = True if len(metadata) == 3 else False
+
+        # The first item in the raw response are the metadata. The second item is a
+        # comma-separated list of column names. If the player is not next to act, it
+        # contains 'HANDS, COMBOS, EQUITY'. When the player is next to act there are
+        # additional columns for the frequency of each action. For example, when the
+        # player can bet or fold these will be 'WEIGHT1, WEIGHT2, EV1, EV2'. The weights
+        # are the frequencies.
+        raw_player_data = [line.split() for line in raw_player_data[2:]]
+
+        player_data = {}
+
+        for row in raw_player_data:
+            hand_details = {}
+
+            # Below is a reference of the possible column names and a row with example
+            # values.
+            #
+            # 'HAND, COMBOS, EQUITY, WEIGHT1, WEIGHT2, EV1, EV2'
+            # 'KcKh  1.0000  50.000  0        100.000  0    0.250'
+            row_values = [float(x) for x in row[1:]]
+
+            hand = row[0]
+
+            hand_details["COMBOS"] = row_values[0]
+            hand_details["EQUITY"] = row_values[1]
+
+            # The player to act also has an EV and frequency
+            if is_next_to_act:
+                for i, action in enumerate(actions):
+                    hand_details[action] = {
+                        "FREQ": row_values[2 + i],
+                        "EV": row_values[2 + i + len(actions)],
+                    }
+
+            player_data[hand] = hand_details
+
+        return player_data, is_next_to_act
+
+    """
+    TODO
+    """
 
     def request_pot_stacks(self):
-        self.send('Request pot/stacks')
-        time.sleep(0.1)
-        recv = self.receive().decode().strip('~')
+        self._send("Request pot/stacks")
 
-        # Skip Header
-        idx = recv.index(']')
-        recv = recv[idx+1:]
+        time.sleep(self._sleep_time_sec)
+
+        response = self._receive().decode().strip("~")
+
+        print(f"response={response}")
+
+        # Skip the header
+        idx = response.index("]")
+        response = response[idx + 1 :]
 
         # Pot
-        idx = recv.index(']')
-        pot  = float(recv[6:idx])
-        recv = recv[idx+1:]
+        idx = response.index("]")
+        pot = float(response[6:idx])
+        response = response[idx + 1 :]
 
-        # OOP Stack
-        idx = recv.index(']')
-        oop_stack  = float(recv[12:idx])
-        recv = recv[idx+1:]
-        
-        # OOP Stack
-        idx = recv.index(']')
-        ip_stack  = float(recv[11:idx])
+        # OOP stack
+        idx = response.index("]")
+        oop_stack = float(response[12:idx])
+        response = response[idx + 1 :]
 
-        return {'pot': pot, 'oop_stack': oop_stack, 'ip_stack': ip_stack}
+        # OOP stack
+        idx = response.index("]")
+        ip_stack = float(response[11:idx])
+
+        return {"pot": pot, "oop_stack": oop_stack, "ip_stack": ip_stack}
+
+    """
+    TODO
+    """
 
     def request_current_line(self):
-        self.send('Request current line')
-        time.sleep(0.05)
-        recv = self.receive().decode().strip('~')
-        if recv == 'Hand is at start of tree.':
+        self._send("Request current line")
+        time.sleep(self._sleep_time_sec)
+        response = self._receive().decode().strip("~")
+
+        if response == "Hand is at start of tree.":
             return []
-        return recv.split(',')
+
+        return response.split(",")
+
+    """
+    TODO
+    """
 
     def take_action(self, action_n):
-        self.send('Take action: {}'.format(action_n))
-        time.sleep(0.05)
-        self.receive().decode().strip('~')
+        self._send("Take action: {}".format(action_n))
+        time.sleep(self._sleep_time_sec)
+        self._receive().decode().strip("~")
 
-    def request_action_data(self):
-        self.send('Request action data')
-        time.sleep(0.1)
-        recv = self.receive().decode().strip('~')
-        recv = recv.strip(']').split(': ')[1].split(',')
-        return  recv
+    """
+    Check if GTO+ is available. If it is, we receive confirmation. If not, GTO+ will
+    crash and the process will terminate. That will confirm it is not available.
+    """
 
     def ask_if_processing(self):
-        return self.send('Still processing instruction?')
+        return self._send("Still processing instruction?")
 
-    def create_message(self, message: str):
-        return "~{}~".format(message)
+    """
+    Private method that sends a message to GTO+
+    """
 
-    def receive(self, timeout_sec=1.0):
-        chunks = []
-        received = 0
+    def _send(self, message: str):
+        if self._verbose:
+            print(f'Attempting to send message to GTO+: "{message}"')
 
-        # This loop collects 'chunks' of length 4096 until there is no more to
-        # collect (the sent message has been read in its entirety)
-        
+        message = self._format_message(message)
+
+        total_sent = 0
+
+        while total_sent < len(message):
+            sent = self._sock.send(message[total_sent:])
+
+            if sent == 0:
+                raise RuntimeError("Socket connection lost")
+
+            total_sent += sent
+
+    """
+    Private method that formats messages for GTO+
+    """
+
+    def _format_message(self, message: str):
+        return "~{}~".format(message).encode("utf-8")
+
+    """
+    Private method that receives a message from GTO+
+    """
+
+    def _receive(self):
+        chunks, received = [], 0
+
+        # Collect chunks of the message until it is fully received
         while True:
-            chunk = self.sock.recv(4096)
-            if chunk == b'~Solver still running. Please try again later.~':
-                print('still processing...')
-                time.sleep(0.5)
+            chunk = self._sock.recv(self._block_len)
+
+            if chunk == b"~Solver still running. Please try again later.~":
+                if self._verbose:
+                    print("Solver still processing. Will retry shortly.")
+
+                time.sleep(self._sleep_time_sec)
+
                 continue
+
             received += len(chunk)
             chunks.append(chunk)
-            if len(chunk) < 4096:
+
+            if len(chunk) < self._block_len:
                 break
 
-        return b''.join(chunks)
+        response = b"".join(chunks)
+
+        if self._verbose:
+            print(f"Received response from GTO+: {response}")
+
+        return response
 
 
-    def send(self, message: str, verbose=False):
-        message = self.create_message(message).encode('utf-8')
-        total_sent = 0
-        if verbose:
-            print("Sending payload: \"{}\"".format(message))
-        while total_sent < len(message):
-            sent = self.sock.send(message[total_sent:])
-            if sent == 0:
-                raise RuntimeError("socket connection broken")
-            total_sent += sent
-    
-    def _load_akq_game(self):
-        '''
-        load a dummy file holding the AKQ game strategy. This is useful for testing
-        and for learning the API
-        '''
-        akq_game = Path(__file__).parent.parent / 'resources' / 'solves' / 'AKQ-Game.gto'
+if __name__ == "__main__":
+    print("Running tests")
 
-
-if __name__ == '__main__':
     import doctest
+
     doctest.testmod()
+
+    print("Finished with tests")
