@@ -16,20 +16,18 @@ class GTO:
         self._block_len = 4096
 
         # GTO+ has fragile interrupt handling. We sleep at these points in attempt
-        # to keep GTO+ running. Note this value may be dependent on your machine
-        # (i.e., this value is sensitive to your box's performance with respect to
-        # its hardware and current load).
-        self._sleep_time_sec = 0.5
-
-        # TODO: Maybe add big sleep, little sleep. Sometimes we can just nap.
-
-    """
-    Opens a connection to GTO+ using the settings provided in the constructor.
-    If GTO+ does not confirm a successful connection, this method raises an
-    exception.
-    """
+        # to keep GTO+ running. Until retry logic is added and GTO+'s API is better
+        # understood, these will have to suffice. Shorter sleep durations tend to
+        # cause problems but these more-or-less work.
+        self._long_sleep_sec = 0.5
+        self._short_sleep_sec = 0.1
 
     def connect(self):
+        """
+        Opens a connection to GTO+ using the settings provided in the constructor.
+        If GTO+ does not confirm a successful connection, this method raises an
+        exception.
+        """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self._addr, self._port))
 
@@ -46,42 +44,68 @@ class GTO:
 
         return response
 
-    """
-    Closes a connection to GTO+.
-    """
-
     def disconnect(self):
+        """
+        Closes a connection to GTO+.
+        """
         if not self._sock:
             return
 
         self._sock.close()
         self._sock = None
 
-    """
-    Loads a saved solve file
-    """
-
     def load_file(self, path: str):
+        """
+        Loads a saved solve file
+        """
         self._send("Load file: {}".format(path))
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._short_sleep_sec)
         response = self._receive().decode().strip("~")
 
         return response
 
-    """
-    Requests node data containing information about the board, player to act, each
-    player's actions, and each player's holdings.
-    """
+    def get_node_data(self):
+        """
+        Requests node data containing information about the board, player to act, each
+        player's actions, and each player's holdings.
 
-    def request_node_data(self):
-        board, oop, ip = self._get_node_data()
-        actions = self._get_action_data()
+        >>> solver = GTO()
+        >>> solver.connect()
+        'You are connected to GTO+'
+        >>> akq_game = (
+            Path(__file__).parent.parent / "resources" / "solves" / "AKQ-Game.gto"
+        )
+        >>> solver.load_file(akq_game)
+        'File successfully loaded.'
+        >>> node_data = s.request_node_data()
+        >>> node_data['pos']
+        'oop'
+        >>> node_data['actions']
+        ['Bet 1', 'Check']
+        >>> node_data['oop']['KcKh']['COMBOS']
+        1.0
+        >>> node_data['oop']['KcKh']['EQUITY']
+        50.0
+        >>> node_data['oop']['KcKh']['Bet 1']['FREQ']
+        0.0
+        >>> node_data['oop']['KcKh']['Check']['FREQ']
+        100.0
+        >>> node_data['oop']['KcKh']['Check']['EV']
+        0.25
+        >>> node_data['ip']['QcQh']['COMBOS']
+        1.0
+        >>> node_data['ip']['QcQh']['EQUITY']
+        0.0
+        """
+        board, oop, ip = self._request_node_data()
+        actions = self._request_action_data()
 
         oop, is_oop_to_act = self._parse_player_data(oop, actions)
         ip, is_ip_to_act = self._parse_player_data(ip, actions)
 
         if is_ip_to_act == is_oop_to_act:
-            raise RuntimeError("IP and OOP can't both be next to act")
+            message = f"IP to act: {is_ip_to_act}. OOP to act: {is_oop_to_act}."
+            raise RuntimeError(f"Next to act collision. {message}")
 
         next_to_act = "ip" if is_ip_to_act else "oop"
 
@@ -93,15 +117,14 @@ class GTO:
             "actions": actions,
         }
 
-    """
-    Private method that parses the response to a request for node data. Returns a tuple
-    containing raw text of the board, IP, and OOP data.
-    """
-
-    def _get_node_data(self):
+    def _request_node_data(self):
+        """
+        Private method that parses the response to a request for node data. Returns a tuple
+        containing raw text of the board, IP, and OOP data.
+        """
         self._send("Request node data")
 
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._long_sleep_sec)
 
         response = self._receive().decode()
 
@@ -127,17 +150,17 @@ class GTO:
 
         # Drop "Board:" so we're left with something of the form "AsTd3h"
         board = board.split()[1].strip()
+        board = [board[i : i + 2] for i in range(0, len(board), 2)]
 
         return (board, oop, ip)
 
-    """
-    Private method that parses the response to a request for action data
-    """
-
-    def _get_action_data(self):
+    def _request_action_data(self):
+        """
+        Private method that parses the response to a request for action data
+        """
         self._send("Request action data")
 
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._short_sleep_sec)
 
         # The response has the following format:
         #
@@ -150,33 +173,32 @@ class GTO:
 
         return result
 
-    """
-    Private method that parses player data at a node. Returns a dictionary of the
-    following form:
-
-    {
-        'KcKh': {
-            'COMBOS': 1.0,
-            'EQUITY': 50.0,
-            'Bet 1': {'FREQ': 0.0, 'EV': 0.0},
-            'Check': {'FREQ' 100.0, 'EV': 0.25}
-        }
-    }
-
-    Note that if the player is not next to act then there will not be any actions
-    (i.e., 'Bet 1' and 'Check').
-
-    GTO+ seems to return these data per combo.
-    """
-
     def _parse_player_data(self, raw_player_data, actions):
-        raw_player_data = raw_player_data.strip().split("\r\n")
+        """
+        Private method that parses player data at a node. Returns a dictionary of the
+        following form:
+
+        {
+            'KcKh': {
+                'COMBOS': 1.0,
+                'EQUITY': 50.0,
+                'Bet 1': {'FREQ': 0.0, 'EV': 0.0},
+                'Check': {'FREQ' 100.0, 'EV': 0.25}
+            }
+        }
+
+        Note that if the player is not next to act then there will not be any actions
+        (i.e., 'Bet 1' and 'Check').
+
+        GTO+ seems to return these data per combo.
+        """
+        player_data_rows = player_data_rows.strip().split("\r\n")
 
         # Metadata are IP/OOP, number of combos, and number of available actions.
         # The available actions are only present when the player is next to act
         # (in this node). If the player is not next to act, there are only two
         # elements in the list.
-        metadata = raw_player_data[0].strip().split(", ")
+        metadata = player_data_rows[0].strip().split(", ")
         is_next_to_act = True if len(metadata) == 3 else False
 
         # The first item in the raw response are the metadata. The second item is a
@@ -185,11 +207,11 @@ class GTO:
         # additional columns for the frequency of each action. For example, when the
         # player can bet or fold these will be 'WEIGHT1, WEIGHT2, EV1, EV2'. The weights
         # are the frequencies.
-        raw_player_data = [line.split() for line in raw_player_data[2:]]
+        player_data_rows = [line.split() for line in player_data_rows[2:]]
 
         player_data = {}
 
-        for row in raw_player_data:
+        for row in player_data_rows:
             hand_details = {}
 
             # Below is a reference of the possible column names and a row with example
@@ -216,14 +238,10 @@ class GTO:
 
         return player_data, is_next_to_act
 
-    """
-    TODO
-    """
-
-    def request_pot_stacks(self):
+    def get_pot_stacks(self):
         self._send("Request pot/stacks")
 
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._short_sleep_sec)
 
         response = self._receive().decode().strip("~")
 
@@ -249,13 +267,9 @@ class GTO:
 
         return {"pot": pot, "oop_stack": oop_stack, "ip_stack": ip_stack}
 
-    """
-    TODO
-    """
-
-    def request_current_line(self):
+    def get_current_line(self):
         self._send("Request current line")
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._short_sleep_sec)
         response = self._receive().decode().strip("~")
 
         if response == "Hand is at start of tree.":
@@ -263,28 +277,22 @@ class GTO:
 
         return response.split(",")
 
-    """
-    TODO
-    """
-
     def take_action(self, action_n):
         self._send("Take action: {}".format(action_n))
-        time.sleep(self._sleep_time_sec)
+        time.sleep(self._short_sleep_sec)
         self._receive().decode().strip("~")
 
-    """
-    Check if GTO+ is available. If it is, we receive confirmation. If not, GTO+ will
-    crash and the process will terminate. That will confirm it is not available.
-    """
-
     def ask_if_processing(self):
+        """
+        Check if GTO+ is available. If it is, we receive confirmation. If not, GTO+ will
+        crash and the process will terminate. That will confirm it is not available.
+        """
         return self._send("Still processing instruction?")
 
-    """
-    Private method that sends a message to GTO+
-    """
-
     def _send(self, message: str):
+        """
+        Private method that sends a message to GTO+
+        """
         if self._verbose:
             print(f'Attempting to send message to GTO+: "{message}"')
 
@@ -300,18 +308,16 @@ class GTO:
 
             total_sent += sent
 
-    """
-    Private method that formats messages for GTO+
-    """
-
     def _format_message(self, message: str):
+        """
+        Private method that formats messages for GTO+
+        """
         return "~{}~".format(message).encode("utf-8")
 
-    """
-    Private method that receives a message from GTO+
-    """
-
     def _receive(self):
+        """
+        Private method that receives a message from GTO+
+        """
         chunks, received = [], 0
 
         # Collect chunks of the message until it is fully received
@@ -322,7 +328,7 @@ class GTO:
                 if self._verbose:
                     print("Solver still processing. Will retry shortly.")
 
-                time.sleep(self._sleep_time_sec)
+                time.sleep(self._short_sleep_sec)
 
                 continue
 
