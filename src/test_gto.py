@@ -30,7 +30,7 @@ class TestGTO(unittest.TestCase):
     def test_get_node_data(self):
         node_data = self.solver.get_node_data()
 
-        self.assertEqual("2d2c2h3d3c", node_data["board"])
+        self.assertEqual(["2d", "2c", "2h", "3d", "3c"], node_data["board"])
         self.assertEqual("oop", node_data["next_to_act"])
         self.assertEqual(["Bet 1", "Check"], node_data["actions"])
 

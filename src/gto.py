@@ -3,6 +3,7 @@
 import socket
 import time
 from pathlib import Path
+from typing import Union
 
 
 class GTO:
@@ -54,7 +55,7 @@ class GTO:
         self._sock.close()
         self._sock = None
 
-    def load_file(self, path: str):
+    def load_file(self, path: Union[Path, str]):
         """
         Loads a saved solve file
         """
@@ -67,18 +68,28 @@ class GTO:
     def get_node_data(self):
         """
         Requests node data containing information about the board, player to act, each
-        player's actions, and each player's holdings.
+        player's actions, and each player's holdings. This is stored as a `dict` with
+        the following fields:
+
+        + "board": a list of cards on the board, e.g., ["2h", "5c", "Td", "Jd"]
+        + "next_to_act": the player who is next to act (either "ip" or "oop")
+        + "oop": a dict representing OOP's the EV and weight for each of the
+                combos in their range, as well as the frequency and EV of each
+                action for each combo in their range; if they are not next to
+                act then they have no actions and this part is blank.
+        + "ip": a dict representing OOP's the EV and weight for each of the
+                combos in their range, as well as the frequency and EV of each
+                action for each combo in their range; if they are not next to
+                act then they have no actions and this part is blank.
+        + "actions": a list of each action available to the player who is next
+                to act. E.g., `["Check", "Bet 1.0", "Bet 2.5"]
 
         >>> solver = GTO()
         >>> solver.connect()
         'You are connected to GTO+'
-        >>> akq_game = (
-            Path(__file__).parent.parent / "resources" / "solves" / "AKQ-Game.gto"
-        )
-        >>> solver.load_file(akq_game)
-        'File successfully loaded.'
-        >>> node_data = s.request_node_data()
-        >>> node_data['pos']
+        >>> solver.load_akq_game()
+        >>> node_data = solver.get_node_data()
+        >>> node_data['next_to_act']
         'oop'
         >>> node_data['actions']
         ['Bet 1', 'Check']
@@ -192,7 +203,7 @@ class GTO:
 
         GTO+ seems to return these data per combo.
         """
-        player_data_rows = player_data_rows.strip().split("\r\n")
+        player_data_rows = raw_player_data.strip().split("\r\n")
 
         # Metadata are IP/OOP, number of combos, and number of available actions.
         # The available actions are only present when the player is next to act
@@ -276,6 +287,12 @@ class GTO:
             return []
 
         return response.split(",")
+
+    def load_akq_game(self) -> None:
+        akq_game = (
+            Path(__file__).parent.parent / "resources" / "solves" / "AKQ-Game.gto"
+        )
+        self.load_file(akq_game)
 
     def take_action(self, action_n):
         self._send("Take action: {}".format(action_n))
