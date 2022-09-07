@@ -3,15 +3,18 @@
 import socket
 import time
 from pathlib import Path
-from typing import Union
+from typing import Optional, Tuple, Union, Dict, Any, List
+from xmlrpc.client import Boolean
 
 
 class GTO:
-    def __init__(self, port=55143, addr="localhost", verbose=False):
-        self._port = port
-        self._addr = addr
-        self._sock = None
-        self._verbose = verbose
+    def __init__(
+        self, port: int = 55143, addr: str = "localhost", verbose: Boolean = False
+    ):
+        self._port: int = port
+        self._addr: str = addr
+        self._sock: Optional[socket.socket] = None
+        self._verbose: Boolean = verbose
 
         # Messages to GTO+ are blocked into 4096 byte chunks
         self._block_len = 4096
@@ -23,7 +26,7 @@ class GTO:
         self._long_sleep_sec = 0.5
         self._short_sleep_sec = 0.1
 
-    def connect(self):
+    def connect(self) -> str:
         """
         Opens a connection to GTO+ using the settings provided in the constructor.
         If GTO+ does not confirm a successful connection, this method raises an
@@ -45,7 +48,7 @@ class GTO:
 
         return response
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """
         Closes a connection to GTO+.
         """
@@ -55,7 +58,7 @@ class GTO:
         self._sock.close()
         self._sock = None
 
-    def load_file(self, path: Union[Path, str]):
+    def load_file(self, path: Union[Path, str]) -> str:
         """
         Loads a saved solve file
         """
@@ -65,7 +68,7 @@ class GTO:
 
         return response
 
-    def get_node_data(self):
+    def get_node_data(self) -> Dict[str, Any]:
         """
         Requests node data containing information about the board, player to act, each
         player's actions, and each player's holdings. This is stored as a `dict` with
@@ -128,7 +131,7 @@ class GTO:
             "actions": actions,
         }
 
-    def _request_node_data(self):
+    def _request_node_data(self) -> Tuple[List[str], str, str]:
         """
         Private method that parses the response to a request for node data. Returns a tuple
         containing raw text of the board, IP, and OOP data.
@@ -165,7 +168,7 @@ class GTO:
 
         return (board, oop, ip)
 
-    def _request_action_data(self):
+    def _request_action_data(self) -> List[str]:
         """
         Private method that parses the response to a request for action data
         """
@@ -184,7 +187,9 @@ class GTO:
 
         return result
 
-    def _parse_player_data(self, raw_player_data, actions):
+    def _parse_player_data(
+        self, raw_player_data: str, actions: List[str]
+    ) -> Tuple[Dict[str, Any], Boolean]:
         """
         Private method that parses player data at a node. Returns a dictionary of the
         following form:
@@ -223,7 +228,7 @@ class GTO:
         player_data = {}
 
         for row in player_data_rows:
-            hand_details = {}
+            hand_details: Dict[str, Union[float, Dict[str, float]]] = {}
 
             # Below is a reference of the possible column names and a row with example
             # values.
@@ -249,7 +254,7 @@ class GTO:
 
         return player_data, is_next_to_act
 
-    def get_pot_stacks(self):
+    def get_pot_stacks(self) -> Dict[str, float]:
         self._send("Request pot/stacks")
 
         time.sleep(self._short_sleep_sec)
@@ -278,7 +283,7 @@ class GTO:
 
         return {"pot": pot, "oop_stack": oop_stack, "ip_stack": ip_stack}
 
-    def get_current_line(self):
+    def get_current_line(self) -> List[str]:
         self._send("Request current line")
         time.sleep(self._short_sleep_sec)
         response = self._receive().decode().strip("~")
@@ -294,19 +299,20 @@ class GTO:
         )
         self.load_file(akq_game)
 
-    def take_action(self, action_n):
+    def take_action(self, action_n: int) -> None:
         self._send("Take action: {}".format(action_n))
         time.sleep(self._short_sleep_sec)
         self._receive().decode().strip("~")
 
-    def ask_if_processing(self):
+    def ask_if_processing(self) -> bytes:
         """
         Check if GTO+ is available. If it is, we receive confirmation. If not, GTO+ will
         crash and the process will terminate. That will confirm it is not available.
         """
-        return self._send("Still processing instruction?")
+        self._send("Still processing instruction?")
+        return self._receive()
 
-    def _send(self, message: str):
+    def _send(self, message: str) -> None:
         """
         Private method that sends a message to GTO+
         """
@@ -325,17 +331,17 @@ class GTO:
 
             total_sent += sent
 
-    def _format_message(self, message: str):
+    def _format_message(self, message: str) -> bytes:
         """
         Private method that formats messages for GTO+
         """
         return "~{}~".format(message).encode("utf-8")
 
-    def _receive(self):
+    def _receive(self) -> bytes:
         """
         Private method that receives a message from GTO+
         """
-        chunks, received = [], 0
+        chunks = []
 
         # Collect chunks of the message until it is fully received
         while True:
@@ -349,7 +355,6 @@ class GTO:
 
                 continue
 
-            received += len(chunk)
             chunks.append(chunk)
 
             if len(chunk) < self._block_len:
@@ -358,7 +363,7 @@ class GTO:
         response = b"".join(chunks)
 
         if self._verbose:
-            print(f"Received response from GTO+: {response}")
+            print(f"Received response from GTO+: {response.decode()}")
 
         return response
 

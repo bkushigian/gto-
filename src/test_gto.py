@@ -9,7 +9,7 @@ class TestGTO(unittest.TestCase):
     instance of GTO+.
     """
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.akq_game = (
             Path(__file__).parent.parent / "resources" / "solves" / "AKQ-Game.gto"
         )
@@ -20,32 +20,32 @@ class TestGTO(unittest.TestCase):
 
         self.assertEqual(result, "File successfully loaded.")
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         self.solver.disconnect()
 
-    def test_load_file(self):
+    def test_load_file(self) -> None:
         result = self.solver.load_file(self.akq_game)
         self.assertEqual(result, "File successfully loaded.")
 
-    def test_get_node_data(self):
+    def test_get_node_data(self) -> None:
         node_data = self.solver.get_node_data()
 
         self.assertEqual(["2d", "2c", "2h", "3d", "3c"], node_data["board"])
         self.assertEqual("oop", node_data["next_to_act"])
         self.assertEqual(["Bet 1", "Check"], node_data["actions"])
 
-    def test_get_pot_stacks(self):
+    def test_get_pot_stacks(self) -> None:
         pot_and_stacks = self.solver.get_pot_stacks()
 
         self.assertEqual(1.0, pot_and_stacks["pot"])
         self.assertEqual(1.0, pot_and_stacks["oop_stack"])
         self.assertEqual(1.0, pot_and_stacks["ip_stack"])
 
-    def test_get_current_line(self):
+    def test_get_current_line(self) -> None:
         current_line = self.solver.get_current_line()
         self.assertEqual([], current_line)
 
-    def test_take_first_action(self):
+    def test_take_first_action(self) -> None:
         self.solver.take_action(0)
 
         nd = self.solver.get_node_data()
@@ -54,7 +54,7 @@ class TestGTO(unittest.TestCase):
         current_line = self.solver.get_current_line()
         self.assertEqual(["Bet 1"], current_line)
 
-    def test_take_second_action(self):
+    def test_take_second_action(self) -> None:
         self.solver.take_action(1)
 
         nd = self.solver.get_node_data()
